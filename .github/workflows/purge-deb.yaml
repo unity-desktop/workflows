@@ -40,6 +40,14 @@ jobs:
         with:
           sparse-checkout: ${{ inputs.path }}/debian
 
+      - name: Find the pull request
+        id: pr
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "number=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
+
       - name: Describe the package
         id: describe
         working-directory: ${{ inputs.path }}
@@ -47,11 +55,13 @@ jobs:
           echo "source=$(sed -n 's/^Source: *//p' debian/control)" >> "$GITHUB_OUTPUT"
 
       - name: Delete the pull request's builds
+        if: github.event.number || steps.pr.outputs.number
+        continue-on-error: true
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           owner: ${{ inputs.owner }}
           package: ${{ inputs.namespace }}/${{ steps.describe.outputs.source }}
-          delete-tags: pr-${{ github.event.number }}-${{ inputs.suite }}
+          delete-tags: pr-${{ github.event.number || steps.pr.outputs.number }}-${{ inputs.suite }}
           delete-untagged: true
           dry-run: ${{ inputs.dry-run }}
