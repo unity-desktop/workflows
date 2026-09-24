@@ -1,0 +1,141 @@
+---
+name: Build Debian package
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Directory containing debian/, relative to the repository root
+        required: false
+        default: .
+        type: string
+      orig-source:
+        description: Make the orig tarball with debian/rules get-orig-source before building
+        required: false
+        default: false
+        type: boolean
+      deps:
+        description: Space-separated source packages to install from their latest release build
+        required: false
+        default: ''
+        type: string
+      pre-release:
+        description: In a pull request, take deps from builds made in the same pull request
+        required: false
+        default: false
+        type: boolean
+      suite:
+        description: Ubuntu series; selects the builder image and the release tag
+        required: false
+        default: stonking
+        type: string
+      registry:
+        description: Where package artifacts are published
+        required: false
+        default: ghcr.io/unity-desktop/oci-packages
+        type: string
+      release-branch:
+        description: Builds of this branch also move the <suite> tag (default is the repository default branch)
+        required: false
+        default: ''
+        type: string
+      push:
+        description: Publish the artifact
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    name: ${{ inputs.path }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    container:
+      image: ghcr.io/unity-desktop/builder:${{ inputs.suite }}
+
+    env:
+      REGISTRY: ${{ inputs.registry }}
+      # pr-<number>-<suite> in a pull request; sha-<commit>, plus <suite> on the release branch, otherwise.
+      TAGS: >-
+        ${{
+          github.event_name == 'pull_request' &&
+          format('pr-{0}-{1}', github.event.number, inputs.suite) ||
+          format('sha-{0}{1}', github.sha,
+            github.ref_name == (inputs.release-branch || github.event.repository.default_branch) &&
+            format(',{0}', inputs.suite) || '')
+        }}
+      # Same pull request's builds with pre-release, else the latest release.
+      DEPS_TAG: >-
+        ${{
+          inputs.pre-release && github.event_name == 'pull_request' &&
+          format('pr-{0}-{1}', github.event.number, inputs.suite) || inputs.suite
+        }}
+
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to the registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | oras login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Pull dependencies via OCI transport
+        if: inputs.deps != ''
+        env:
+          DEPS: ${{ inputs.deps }}
+        run: |
+          for dep in $DEPS; do
+            oras pull "$REGISTRY/$dep:$DEPS_TAG" --output /var/cache/local-repository
+          done
+
+      - name: Refresh apt lists
+        run: apt-get update
+
+      - name: Install build dependencies
+        working-directory: ${{ inputs.path }}
+        run: eatmydata mk-build-deps -ir -t "apt-get -y --no-install-recommends" debian/control
+
+      - name: Make the orig tarball
+        if: inputs.orig-source
+        working-directory: ${{ inputs.path }}
+        run: debian/rules get-orig-source
+
+      - name: Build
+        id: build
+        working-directory: ${{ inputs.path }}
+        run: |
+          eatmydata dpkg-buildpackage -us -uc
+          echo "source=$(dpkg-parsechangelog -S Source)" >> "$GITHUB_OUTPUT"
+
+      # Only the files the .changes names.
+      - name: Collect the upload
+        working-directory: ${{ inputs.path }}
+        env:
+          SOURCE: ${{ steps.build.outputs.source }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.deb-out"
+          dcmd mv ../"${SOURCE}"_*.changes "$GITHUB_WORKSPACE/.deb-out/"
+
+      - name: Lintian
+        continue-on-error: true
+        working-directory: .deb-out
+        run: lintian --tag-display-limit 0 ./*.changes
+
+      # image.source links the package to this repository in GHCR.
+      - name: Publish
+        if: inputs.push
+        working-directory: .deb-out
+        env:
+          SOURCE: ${{ steps.build.outputs.source }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          oras push "$REGISTRY/$SOURCE:$TAGS" \
+            --artifact-type application/vnd.debian.upload.v1 \
+            --annotation "org.opencontainers.image.source=$SOURCE_URL" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            $(dcmd ./*.changes)

@@ -1,0 +1,57 @@
+---
+name: Purge Debian package
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Directory containing debian/, relative to the repository root
+        required: false
+        default: .
+        type: string
+      suite:
+        description: Ubuntu series of the pull request builds to purge
+        required: false
+        default: stonking
+        type: string
+      owner:
+        description: Owner of the package artifacts
+        required: false
+        default: unity-desktop
+        type: string
+      namespace:
+        description: Package name prefix build-deb published under
+        required: false
+        default: oci-packages
+        type: string
+      dry-run:
+        description: Report what would be deleted without deleting it
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  purge:
+    name: ${{ inputs.path }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ${{ inputs.path }}/debian
+
+      - name: Describe the package
+        id: describe
+        working-directory: ${{ inputs.path }}
+        run: |
+          echo "source=$(sed -n 's/^Source: *//p' debian/control)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete the pull request's builds
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: ${{ inputs.owner }}
+          package: ${{ inputs.namespace }}/${{ steps.describe.outputs.source }}
+          delete-tags: pr-${{ github.event.number }}-${{ inputs.suite }}
+          delete-untagged: true
+          dry-run: ${{ inputs.dry-run }}
