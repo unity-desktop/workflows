@@ -78,6 +78,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The checkout belongs to the runner user, so git refuses it to root in the container.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Log in to the registry
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
