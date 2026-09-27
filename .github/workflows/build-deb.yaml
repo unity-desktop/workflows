@@ -120,7 +120,7 @@ jobs:
         id: build
         working-directory: ${{ inputs.path }}
         run: |
-          eatmydata dpkg-buildpackage -us -uc
+          eatmydata dpkg-buildpackage -us -uc -sa
           echo "source=$(dpkg-parsechangelog -S Source)" >> "$GITHUB_OUTPUT"
 
       # Only the files the .changes names.
